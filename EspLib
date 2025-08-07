@@ -1,197 +1,204 @@
 local function getGlobalTable()
-	return typeof(getfenv().getgenv) == "function" and typeof(getfenv().getgenv()) == "table" and getfenv().getgenv() or _G
+    return typeof(getfenv().getgenv) == "function" and typeof(getfenv().getgenv()) == "table" and getfenv().getgenv() or _G
 end
 
 if getGlobalTable().ESPLib then
-	return getGlobalTable().ESPLib
+    return getGlobalTable().ESPLib
 end
 
 local ESPChange = Instance.new("BindableEvent")
+local RunService = game:GetService("RunService")
+local Players = game:GetService("Players")
+
 local espLib; espLib = {
-	ESPValues = setmetatable({}, {
-		__index = function(self, name)
-    if typeof(espLib.Values) ~= "table" then
-      espLib.Values = {}
-    end
-			return not not espLib.Values[name] -- "not not" to convert value to boolean
-		end,
-		__newindex = function(self, name, value)
-    if typeof(espLib.Values) ~= "table" then
-      espLib.Values = {}
-    end
-			if espLib.Values[name] == value then return end
-			espLib.Values[name] = value
-			ESPChange:Fire()
-		end
-	}),
-	Values = {},
-	ESPApplied = {}
+    ESPValues = setmetatable({}, {
+        __index = function(self, name)
+            if typeof(espLib.Values) ~= "table" then espLib.Values = {} end
+            return not not espLib.Values[name]
+        end,
+        __newindex = function(self, name, value)
+            if typeof(espLib.Values) ~= "table" then espLib.Values = {} end
+            if espLib.Values[name] == value then return end
+            espLib.Values[name] = value
+            ESPChange:Fire(name, value)
+        end
+    }),
+    Values = {},
+    ESPApplied = {},
+    Watchers = {},  -- For auto-applying to new children
+    RainbowSpeed = 24,
+    UpdateFrequency = 0.1  -- Seconds between text updates (if no RenderStepped)
 }
 
-local cons = {}
-local speed = 24
-
 local function GetRGBValue()
-	return Color3.new(
-		math.sin(((os.clock() * speed) % 360) / 360 * 2 * math.pi) * 0.5 + 0.5,
-		math.sin((((os.clock() * speed) % 360) / 360 + 1/3) * 2 * math.pi) * 0.5 + 0.5,
-		math.sin((((os.clock() * speed) % 360) / 360 + 2/3) * 2 * math.pi) * 0.5 + 0.5
-	)
+    return Color3.new(
+        math.sin(((os.clock() * espLib.RainbowSpeed) % 360) / 360 * 2 * math.pi) * 0.5 + 0.5,
+        math.sin((((os.clock() * espLib.RainbowSpeed) % 360) / 360 + 1/3) * 2 * math.pi) * 0.5 + 0.5,
+        math.sin((((os.clock() * espLib.RainbowSpeed) % 360) / 360 + 2/3) * 2 * math.pi) * 0.5 + 0.5
+    )
 end
 
-local function applyESP(obj, espSettings)
-	if not obj then return end
-	obj = obj:IsA("Model") and obj or obj:FindFirstAncestorOfClass("Model") or obj
+local function applyESP(obj, settings)
+    if not obj or espLib.ESPApplied[obj] then return end
+    obj = obj:IsA("Model") and obj or obj:FindFirstAncestorOfClass("Model") or obj
+    if not obj:IsA("Model") then return end
 
-	espSettings = espSettings or {}
-	espSettings.Color = espSettings.Color or Color3.new(1,1,1)
-	espSettings.HighlightEnabled = type(espSettings.HighlightEnabled) ~= "nil" and espSettings.HighlightEnabled or type(espSettings.HighlightEnabled) == "nil"
-	espSettings.Text = espSettings.Text or obj.Name
-	espSettings.ESPName = espSettings.ESPName or ""
+    settings = settings or {}
+    settings.Color = settings.Color or Color3.new(1,1,1)
+    settings.HighlightEnabled = settings.HighlightEnabled ~= false
+    settings.Text = settings.Text or obj.Name
+    settings.ESPName = settings.ESPName or "DefaultESP"
+    settings.TextUpdater = settings.TextUpdater  -- Function to update text dynamically
+    settings.UseRenderSteppedForUpdate = settings.UseRenderSteppedForUpdate or false  -- True for per-frame updates
 
-	local col = espSettings.Color
-	local con1, con2, con3, con4;
+    espLib.ESPApplied[obj] = {settings = settings, connections = {}}
 
-	local function updateESP()
-		local found = table.find(espLib.ESPApplied, obj)
-		if not found then
-			table.insert(espLib.ESPApplied, obj)
-		end
+    local ESPFolder = Instance.new("Folder", obj)
+    ESPFolder.Name = "ESPFolder"
 
-		local ESPFolder = obj:FindFirstChild("ESPFolder") or Instance.new("Folder", obj)
-		ESPFolder.Name = "ESPFolder"
+    local hl = Instance.new("Highlight", ESPFolder)
+    hl.Adornee = obj
+    hl.FillTransparency = 0.8
+    hl.OutlineTransparency = 0.5
+    hl.Enabled = false  -- Will be toggled later
 
-		local hl = ESPFolder:FindFirstChild("Highlight") or Instance.new("Highlight", ESPFolder)
-		hl.Adornee = obj
-		hl.OutlineColor = col
-		hl.FillColor = col
-		hl.FillTransparency = 0.8
-		hl.OutlineTransparency = 0.5
-		hl.Enabled = not not espLib.ESPValues[espSettings.ESPName]
+    local bg = Instance.new("BillboardGui", ESPFolder)
+    bg.Adornee = settings.Adornee or obj:FindFirstChild("Head") or obj.PrimaryPart or obj
+    bg.AlwaysOnTop = true
+    bg.Size = UDim2.fromOffset(250, 200)
+    bg.MaxDistance = math.huge
+    bg.Enabled = false
 
-		if not espSettings.HighlightEnabled then
-			hl:Destroy()
-		end
+    local label = Instance.new("TextLabel", bg)
+    label.BackgroundTransparency = 1
+    label.TextColor3 = settings.Color
+    label.Text = settings.Text
+    label.TextScaled = true
+    label.Font = Enum.Font.Code
+    label.Size = UDim2.new(1, 0, 1, 0)
+    label.Position = UDim2.new(0.5, 0, 0.5, 0)
+    label.AnchorPoint = Vector2.new(0.5, 0.5)
+    label.RichText = true
 
-		local bg = ESPFolder:FindFirstChild("BillboardGui") or Instance.new("BillboardGui", ESPFolder)
-		bg.Adornee = espSettings.Object or obj
-		bg.AlwaysOnTop = true
-		bg.ClipsDescendants = false
-		bg.Size = UDim2.fromOffset(250, 200)
-		bg.MaxDistance = math.huge
-		bg.Enabled = not not espLib.ESPValues[espSettings.ESPName]
+    local stroke = Instance.new("UIStroke", label)
+    stroke.Thickness = 2.5
 
-		local label = bg:FindFirstChild("TextLabel") or Instance.new("TextLabel", bg)
-		label.TextStrokeTransparency = 1
-		label.BackgroundTransparency = 1
-		label.TextColor3 = col
-		label.Text = espSettings.Text
-		label.TextScaled = true
-		label.Font = Enum.Font.Code
-		label.Size = UDim2.new(1, 0, 0, #label.Text:gsub("\r", "\n"):split("\n") * 20)
-		label.Position = UDim2.new(0.5, 0, 0.5, 0)
-		label.AnchorPoint = Vector2.new(0.5, 0.5)
-		label.RichText = true
-		
-		cons[obj] = cons[obj] or {}
-		cons[obj][4] = cons[obj][4] or label:GetPropertyChangedSignal("Text"):Connect(function()
-			label.Size = UDim2.new(1, 0, 0, #label.Text:gsub("\r", "\n"):split("\n") * 20)
-		end)
-		
-		con4 = cons[obj][4]
+    local function updateESP()
+        if not obj or not obj.Parent then return end
+        local color = espLib.ESPValues.RGBESP and GetRGBValue() or settings.Color
+        hl.OutlineColor = color
+        hl.FillColor = color
+        hl.Enabled = espLib.ESPValues[settings.ESPName] and settings.HighlightEnabled
+        bg.Enabled = espLib.ESPValues[settings.ESPName]
+        label.TextColor3 = color
+        label.Text = settings.Text  -- Initial or static text
+    end
+    updateESP()
 
-		local stroke = label:FindFirstChild("UIStroke") or Instance.new("UIStroke", label)
-		stroke.Thickness = 2.5
-	end
+    -- Auto text update
+    local lastUpdate = 0
+    local updateCon
+    if settings.TextUpdater then
+        if settings.UseRenderSteppedForUpdate then
+            updateCon = RunService.RenderStepped:Connect(function()
+                settings.Text = settings.TextUpdater(obj) or settings.Text
+                label.Text = settings.Text
+                updateESP()
+            end)
+        else
+            updateCon = RunService.Heartbeat:Connect(function(dt)
+                lastUpdate = lastUpdate + dt
+                if lastUpdate >= espLib.UpdateFrequency then
+                    lastUpdate = 0
+                    settings.Text = settings.TextUpdater(obj) or settings.Text
+                    label.Text = settings.Text
+                    updateESP()
+                end
+            end)
+        end
+        table.insert(espLib.ESPApplied[obj].connections, updateCon)
+    end
 
-	deapplyESP(obj)
-	updateESP()
+    -- RGB connection if enabled
+    local rgbCon
+    local function toggleRGB(enable)
+        if enable and not rgbCon then
+            rgbCon = RunService.RenderStepped:Connect(updateESP)
+            table.insert(espLib.ESPApplied[obj].connections, rgbCon)
+        elseif not enable and rgbCon then
+            rgbCon:Disconnect()
+            rgbCon = nil
+            updateESP()
+        end
+    end
+    toggleRGB(espLib.ESPValues.RGBESP)
 
-	cons[obj] = {}
+    -- Event connections
+    local changeCon = ESPChange.Event:Connect(function(changedName, value)
+        if changedName == settings.ESPName or changedName == nil then
+            updateESP()
+        end
+        if changedName == "RGBESP" then
+            toggleRGB(value)
+        end
+    end)
+    table.insert(espLib.ESPApplied[obj].connections, changeCon)
 
-	local function doCon3()
-		if con3 then
-			con3:Disconnect()
-			con3 = nil
-			cons[obj][3] = nil
-		end
-		con3 = game:GetService("RunService").RenderStepped:Connect(function()
-			if not obj or not obj.Parent or not obj:FindFirstChild("ESPFolder") then
-				con1:Disconnect()
-				con2:Disconnect()
-				con3:Disconnect()
-				if con4 then
-					con4:Disconnect()
-					con4 = nil
-				end
-				con3 = nil
-				cons[obj][3] = nil
-				col = espSettings.Color
-				updateESP()
-				return
-			end
-			col = GetRGBValue()
-			updateESP()
-		end)
-		cons[obj][3] = con3
-	end
-	con1 = ESPChange.Event:Connect(function()
-		updateESP()
-		if espLib.ESPValues.RGBESP and not con3 then
-			doCon3()
-		elseif not espLib.ESPValues.RGBESP and con3 then
-			con3:Disconnect()
-			con3 = nil
-			cons[obj][3] = nil
-			col = espSettings.Color
-			updateESP()
-		end
-	end)
-	con2 = obj.Destroying:Connect(function()
-		con1:Disconnect()
-		con2:Disconnect()
-		if con4 then
-			con4:Disconnect()
-			con4 = nil
-		end
-		if con3 then
-			con3:Disconnect()
-			con3 = nil
-			cons[obj][3] = nil
-			col = espSettings.Color
-			updateESP()
-		end
-	end)
-	cons[obj][1] = con1
-	cons[obj][2] = con2
-	if espLib.ESPValues.RGBESP then
-		doCon3()
-	end
+    local destroyCon = obj.Destroying:Connect(function()
+        espLib.DeapplyESP(obj)
+    end)
+    table.insert(espLib.ESPApplied[obj].connections, destroyCon)
 end
 
-function deapplyESP(obj)
-	if not obj then return end
-	obj = obj:IsA("Model") and obj or obj:FindFirstAncestorOfClass("Model") or obj
+function espLib.DeapplyESP(obj)
+    if not obj or not espLib.ESPApplied[obj] then return end
+    local data = espLib.ESPApplied[obj]
+    for _, con in ipairs(data.connections) do
+        con:Disconnect()
+    end
+    if obj:FindFirstChild("ESPFolder") then
+        obj.ESPFolder:Destroy()
+    end
+    espLib.ESPApplied[obj] = nil
+end
 
-	local found = table.find(espLib.ESPApplied, obj)
-	if found then
-		table.remove(espLib.ESPApplied, found)
-	end
+-- Simpler batch apply
+function espLib.ApplyToAll(container, filterFunc, settings)
+    for _, child in ipairs(container:GetChildren()) do
+        if not filterFunc or filterFunc(child) then
+            applyESP(child, settings)
+        end
+    end
+end
 
-	for i,v in (cons[obj] or {}) do
-		if v then
-			v:Disconnect()
-		end
-	end
+-- Watcher for auto-apply on new additions
+function espLib.AddWatcher(container, filterFunc, settings)
+    local watcher = {
+        container = container,
+        filterFunc = filterFunc,
+        settings = settings,
+        connection = container.ChildAdded:Connect(function(child)
+            if not filterFunc or filterFunc(child) then
+                applyESP(child, settings)
+            end
+        end)
+    }
+    table.insert(espLib.Watchers, watcher)
+    espLib.ApplyToAll(container, filterFunc, settings)  -- Apply to existing
+    return watcher
+end
 
-	if obj:FindFirstChild("ESPFolder") then
-		obj.ESPFolder:Destroy()
-	end
+function espLib.RemoveWatcher(watcher)
+    if watcher.connection then
+        watcher.connection:Disconnect()
+    end
+    local index = table.find(espLib.Watchers, watcher)
+    if index then
+        table.remove(espLib.Watchers, index)
+    end
 end
 
 espLib.ApplyESP = applyESP
-espLib.DeapplyESP = deapplyESP
 
 getGlobalTable().ESPLib = espLib
-
 return espLib
